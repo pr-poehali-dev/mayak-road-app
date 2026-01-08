@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Icon from '@/components/ui/icon';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -8,60 +8,12 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { toast } from 'sonner';
+import YandexMap from '@/components/YandexMap';
+import TelegramAuth from '@/components/TelegramAuth';
+import * as api from '@/lib/api';
 
 type EventType = 'accident' | 'ice' | 'snow' | 'repair' | 'other';
-
-interface RoadEvent {
-  id: string;
-  type: EventType;
-  title: string;
-  description: string;
-  lat: number;
-  lng: number;
-  distance: number;
-  timestamp: Date;
-  author: {
-    name: string;
-    avatar: string;
-    rating: number;
-  };
-}
-
-const mockEvents: RoadEvent[] = [
-  {
-    id: '1',
-    type: 'accident',
-    title: 'ДТП на перекрестке',
-    description: 'Столкновение двух автомобилей, движение затруднено',
-    lat: 55.7558,
-    lng: 37.6173,
-    distance: 2.3,
-    timestamp: new Date(Date.now() - 15 * 60000),
-    author: { name: 'Алексей М.', avatar: '', rating: 4.8 }
-  },
-  {
-    id: '2',
-    type: 'ice',
-    title: 'Гололёд',
-    description: 'Скользкая дорога, будьте осторожны',
-    lat: 55.7520,
-    lng: 37.6156,
-    distance: 5.1,
-    timestamp: new Date(Date.now() - 45 * 60000),
-    author: { name: 'Мария С.', avatar: '', rating: 4.9 }
-  },
-  {
-    id: '3',
-    type: 'repair',
-    title: 'Дорожные работы',
-    description: 'Ремонт дорожного покрытия, одна полоса перекрыта',
-    lat: 55.7580,
-    lng: 37.6200,
-    distance: 8.7,
-    timestamp: new Date(Date.now() - 120 * 60000),
-    author: { name: 'Дмитрий К.', avatar: '', rating: 4.6 }
-  }
-];
 
 const eventConfig = {
   accident: { icon: 'AlertTriangle', label: 'ДТП', color: 'text-red-600' },
@@ -72,24 +24,153 @@ const eventConfig = {
 };
 
 export default function Index() {
+  const [user, setUser] = useState<api.User | null>(null);
   const [activeTab, setActiveTab] = useState<'map' | 'profile'>('map');
   const [showCreateEvent, setShowCreateEvent] = useState(false);
-  const [selectedEvent, setSelectedEvent] = useState<RoadEvent | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<api.RoadEvent | null>(null);
+  const [events, setEvents] = useState<api.RoadEvent[]>([]);
+  const [userLocation, setUserLocation] = useState<[number, number]>([55.7558, 37.6173]);
+  const [loading, setLoading] = useState(false);
   const [newEvent, setNewEvent] = useState({
     type: 'accident' as EventType,
     title: '',
     description: ''
   });
 
-  const userProfile = {
-    name: 'Иван Петров',
-    avatar: '',
-    rating: 4.7,
-    eventsCreated: 23,
-    helpfulReports: 18
+  useEffect(() => {
+    const savedUser = localStorage.getItem('mayak_user');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user) {
+      loadEvents();
+      requestLocation();
+      registerServiceWorker();
+    }
+  }, [user]);
+
+  const handleTelegramAuth = async (telegramUser: any) => {
+    try {
+      setLoading(true);
+      const userData = await api.authenticateTelegram(telegramUser);
+      setUser(userData);
+      localStorage.setItem('mayak_user', JSON.stringify(userData));
+      toast.success('Добро пожаловать в МАЯК!');
+    } catch (error: any) {
+      toast.error('Ошибка авторизации: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const formatTime = (date: Date) => {
+  const requestLocation = () => {
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const coords: [number, number] = [position.coords.latitude, position.coords.longitude];
+          setUserLocation(coords);
+          loadEvents(coords[0], coords[1]);
+        },
+        (error) => {
+          toast.error('Не удалось получить местоположение');
+          console.error(error);
+        }
+      );
+    }
+  };
+
+  const loadEvents = async (lat = userLocation[0], lng = userLocation[1]) => {
+    try {
+      setLoading(true);
+      const eventsList = await api.getEvents(lat, lng, 59);
+      setEvents(eventsList);
+    } catch (error: any) {
+      toast.error('Ошибка загрузки событий: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateEvent = async () => {
+    if (!user) return;
+    if (!newEvent.title.trim()) {
+      toast.error('Заполните заголовок события');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      await api.createEvent(
+        user.id,
+        newEvent.type,
+        newEvent.title,
+        newEvent.description,
+        userLocation[0],
+        userLocation[1]
+      );
+      toast.success('Событие создано!');
+      setShowCreateEvent(false);
+      setNewEvent({ type: 'accident', title: '', description: '' });
+      loadEvents();
+    } catch (error: any) {
+      toast.error('Ошибка создания события: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVoteEvent = async (eventId: number) => {
+    if (!user) return;
+    try {
+      await api.voteEvent(eventId, user.id);
+      toast.success('Спасибо за отзыв!');
+      loadEvents();
+    } catch (error: any) {
+      toast.error('Ошибка: ' + error.message);
+    }
+  };
+
+  const registerServiceWorker = async () => {
+    if ('serviceWorker' in navigator && 'PushManager' in window) {
+      try {
+        const registration = await navigator.serviceWorker.register('/sw.js');
+        
+        const permission = await Notification.requestPermission();
+        if (permission === 'granted' && user) {
+          const subscription = await registration.pushManager.subscribe({
+            userVisibleOnly: true,
+            applicationServerKey: urlBase64ToUint8Array(
+              'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U'
+            )
+          });
+          
+          await api.subscribePush(user.id, subscription);
+          toast.success('Уведомления включены!');
+        }
+      } catch (error) {
+        console.error('Service Worker error:', error);
+      }
+    }
+  };
+
+  const urlBase64ToUint8Array = (base64String: string) => {
+    const padding = '='.repeat((4 - base64String.length % 4) % 4);
+    const base64 = (base64String + padding)
+      .replace(/\-/g, '+')
+      .replace(/_/g, '/');
+    const rawData = window.atob(base64);
+    const outputArray = new Uint8Array(rawData.length);
+    for (let i = 0; i < rawData.length; ++i) {
+      outputArray[i] = rawData.charCodeAt(i);
+    }
+    return outputArray;
+  };
+
+  const formatTime = (dateString: string) => {
+    const date = new Date(dateString);
     const diff = Date.now() - date.getTime();
     const minutes = Math.floor(diff / 60000);
     if (minutes < 60) return `${minutes} мин назад`;
@@ -98,11 +179,9 @@ export default function Index() {
     return `${Math.floor(hours / 24)} д назад`;
   };
 
-  const handleCreateEvent = () => {
-    console.log('Создание события:', newEvent);
-    setShowCreateEvent(false);
-    setNewEvent({ type: 'accident', title: '', description: '' });
-  };
+  if (!user) {
+    return <TelegramAuth onAuth={handleTelegramAuth} />;
+  }
 
   return (
     <div className="min-h-screen bg-[#F2F2F7] flex flex-col">
@@ -113,9 +192,9 @@ export default function Index() {
             <Icon name="MessageCircle" size={20} />
           </Button>
           <Avatar className="h-9 w-9 border-2 border-[#007AFF]">
-            <AvatarImage src={userProfile.avatar} />
+            <AvatarImage src={user.photo_url} />
             <AvatarFallback className="bg-[#007AFF] text-white text-sm">
-              {userProfile.name.split(' ').map(n => n[0]).join('')}
+              {user.first_name[0]}{user.last_name?.[0] || ''}
             </AvatarFallback>
           </Avatar>
         </div>
@@ -134,14 +213,21 @@ export default function Index() {
                   <Icon name="MapPin" size={32} />
                 </div>
               </div>
-              <p className="text-sm opacity-90">События поблизости: {mockEvents.length}</p>
+              <p className="text-sm opacity-90">События поблизости: {events.length}</p>
             </div>
+
+            <YandexMap
+              events={events}
+              center={userLocation}
+              onEventClick={setSelectedEvent}
+            />
 
             <div className="flex items-center justify-between">
               <h2 className="text-lg font-semibold">События на дороге</h2>
               <Button
                 onClick={() => setShowCreateEvent(true)}
                 className="bg-[#007AFF] hover:bg-[#0051D5] text-white rounded-full h-10 px-6 shadow-lg bounce-in"
+                disabled={loading}
               >
                 <Icon name="Plus" size={18} className="mr-2" />
                 Добавить
@@ -149,7 +235,7 @@ export default function Index() {
             </div>
 
             <div className="space-y-3">
-              {mockEvents.map((event) => {
+              {events.map((event) => {
                 const config = eventConfig[event.type];
                 return (
                   <Card
@@ -183,6 +269,13 @@ export default function Index() {
                   </Card>
                 );
               })}
+              {events.length === 0 && !loading && (
+                <Card className="p-8 text-center border-none shadow-sm">
+                  <Icon name="MapPin" size={48} className="mx-auto text-gray-400 mb-3" />
+                  <p className="text-gray-600">Событий поблизости пока нет</p>
+                  <p className="text-sm text-gray-500 mt-1">Будьте первым, кто добавит информацию!</p>
+                </Card>
+              )}
             </div>
           </div>
         )}
@@ -192,29 +285,28 @@ export default function Index() {
             <Card className="p-6 border-none shadow-sm">
               <div className="flex flex-col items-center text-center">
                 <Avatar className="h-24 w-24 border-4 border-[#007AFF] mb-4">
-                  <AvatarImage src={userProfile.avatar} />
+                  <AvatarImage src={user.photo_url} />
                   <AvatarFallback className="bg-[#007AFF] text-white text-2xl">
-                    {userProfile.name.split(' ').map(n => n[0]).join('')}
+                    {user.first_name[0]}{user.last_name?.[0] || ''}
                   </AvatarFallback>
                 </Avatar>
-                <h2 className="text-2xl font-bold mb-1">{userProfile.name}</h2>
+                <h2 className="text-2xl font-bold mb-1">
+                  {user.first_name} {user.last_name}
+                </h2>
                 <div className="flex items-center gap-1 text-yellow-500 mb-4">
                   <Icon name="Star" size={20} />
-                  <span className="text-lg font-semibold">{userProfile.rating}</span>
+                  <span className="text-lg font-semibold">{user.rating.toFixed(1)}</span>
                 </div>
-                <Button className="bg-[#007AFF] hover:bg-[#0051D5] text-white rounded-full">
-                  Редактировать профиль
-                </Button>
               </div>
             </Card>
 
             <div className="grid grid-cols-2 gap-3">
               <Card className="p-4 border-none shadow-sm text-center">
-                <div className="text-3xl font-bold text-[#007AFF] mb-1">{userProfile.eventsCreated}</div>
+                <div className="text-3xl font-bold text-[#007AFF] mb-1">{user.events_created}</div>
                 <div className="text-sm text-gray-600">Создано событий</div>
               </Card>
               <Card className="p-4 border-none shadow-sm text-center">
-                <div className="text-3xl font-bold text-green-600 mb-1">{userProfile.helpfulReports}</div>
+                <div className="text-3xl font-bold text-green-600 mb-1">{user.helpful_reports}</div>
                 <div className="text-sm text-gray-600">Полезных отчётов</div>
               </Card>
             </div>
@@ -222,26 +314,46 @@ export default function Index() {
             <Card className="p-4 border-none shadow-sm">
               <h3 className="font-semibold mb-3">Достижения</h3>
               <div className="space-y-2">
-                <div className="flex items-center gap-3 p-2 bg-yellow-50 rounded-xl">
-                  <div className="text-2xl">🏆</div>
-                  <div className="flex-1">
-                    <p className="font-medium text-sm">Помощник на дороге</p>
-                    <p className="text-xs text-gray-600">20+ полезных отчётов</p>
+                {user.helpful_reports >= 20 && (
+                  <div className="flex items-center gap-3 p-2 bg-yellow-50 rounded-xl">
+                    <div className="text-2xl">🏆</div>
+                    <div className="flex-1">
+                      <p className="font-medium text-sm">Помощник на дороге</p>
+                      <p className="text-xs text-gray-600">20+ полезных отчётов</p>
+                    </div>
                   </div>
-                </div>
-                <div className="flex items-center gap-3 p-2 bg-blue-50 rounded-xl">
-                  <div className="text-2xl">⭐</div>
-                  <div className="flex-1">
-                    <p className="font-medium text-sm">Активный участник</p>
-                    <p className="text-xs text-gray-600">Рейтинг выше 4.5</p>
+                )}
+                {user.rating >= 4.5 && (
+                  <div className="flex items-center gap-3 p-2 bg-blue-50 rounded-xl">
+                    <div className="text-2xl">⭐</div>
+                    <div className="flex-1">
+                      <p className="font-medium text-sm">Активный участник</p>
+                      <p className="text-xs text-gray-600">Рейтинг выше 4.5</p>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             </Card>
 
-            <Button variant="outline" className="w-full rounded-xl">
+            <Button
+              variant="outline"
+              className="w-full rounded-xl"
+              onClick={() => window.open('https://t.me/YOUR_SUPPORT_BOT', '_blank')}
+            >
               <Icon name="MessageCircle" size={18} className="mr-2" />
               Связаться с поддержкой
+            </Button>
+
+            <Button
+              variant="destructive"
+              className="w-full rounded-xl"
+              onClick={() => {
+                localStorage.removeItem('mayak_user');
+                setUser(null);
+              }}
+            >
+              <Icon name="LogOut" size={18} className="mr-2" />
+              Выйти
             </Button>
           </div>
         )}
@@ -316,8 +428,9 @@ export default function Index() {
             <Button
               onClick={handleCreateEvent}
               className="w-full bg-[#007AFF] hover:bg-[#0051D5] text-white rounded-xl h-12"
+              disabled={loading}
             >
-              Создать событие
+              {loading ? 'Создание...' : 'Создать событие'}
             </Button>
           </div>
         </DialogContent>
@@ -359,11 +472,21 @@ export default function Index() {
                   </div>
                 </div>
                 <div className="flex gap-2">
-                  <Button className="flex-1 bg-[#007AFF] hover:bg-[#0051D5] text-white rounded-xl">
+                  <Button
+                    className="flex-1 bg-[#007AFF] hover:bg-[#0051D5] text-white rounded-xl"
+                    onClick={() => {
+                      const url = `https://yandex.ru/maps/?rtext=~${selectedEvent.latitude},${selectedEvent.longitude}`;
+                      window.open(url, '_blank');
+                    }}
+                  >
                     <Icon name="Navigation" size={18} className="mr-2" />
                     Навигация
                   </Button>
-                  <Button variant="outline" className="flex-1 rounded-xl">
+                  <Button
+                    variant="outline"
+                    className="flex-1 rounded-xl"
+                    onClick={() => handleVoteEvent(selectedEvent.id)}
+                  >
                     <Icon name="ThumbsUp" size={18} className="mr-2" />
                     Полезно
                   </Button>

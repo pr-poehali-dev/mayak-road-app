@@ -1,0 +1,11 @@
+{
+  "tests": [
+    {
+      "name": "Test GET events",
+      "method": "GET",
+      "path": "/?lat=55.7558&lng=37.6173&radius=59",
+      "expectedStatus": 200,
+      "bodyMatcher": "partial"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "tests": [
+    {
+      "name": "Test OPTIONS request",
+      "method": "OPTIONS",
+      "path": "/",
+      "expectedStatus": 200
+    },
+    {
+      "name": "Test POST with valid structure",
+      "method": "POST",
+      "path": "/",
+      "body": {
+        "telegramData": {
+          "id": "123456789",
+          "first_name": "Test",
+          "username": "testuser",
+          "hash": "test_hash"
+        }
+      },
+      "expectedStatus": 200,
+      "bodyMatcher": "partial"
+    }
+  ]
+}
